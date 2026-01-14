@@ -173,6 +173,28 @@ func (r *Repository) CleanOldLogs() error {
 	return nil
 }
 
+// ClearLogsForWebsite 清空指定网站的日志数据
+func (r *Repository) ClearLogsForWebsite(websiteID string) error {
+	tableName := fmt.Sprintf("%s_nginx_logs", websiteID)
+	if _, err := r.db.Exec(fmt.Sprintf(`DELETE FROM "%s"`, tableName)); err != nil {
+		return fmt.Errorf("清空网站日志失败: %w", err)
+	}
+	return nil
+}
+
+// ClearAllLogs 清空所有网站的日志数据
+func (r *Repository) ClearAllLogs() error {
+	for _, id := range config.GetAllWebsiteIDs() {
+		if err := r.ClearLogsForWebsite(id); err != nil {
+			return err
+		}
+	}
+	if _, err := r.db.Exec("VACUUM"); err != nil {
+		logrus.WithError(err).Warn("数据库压缩失败")
+	}
+	return nil
+}
+
 func (r *Repository) createTables() error {
 	common := `id INTEGER PRIMARY KEY AUTOINCREMENT,
 	ip TEXT NOT NULL,

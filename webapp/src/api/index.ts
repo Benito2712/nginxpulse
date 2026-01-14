@@ -32,6 +32,12 @@ export const fetchAppStatus = async (): Promise<AppStatusResponse> => {
   return response.data;
 };
 
+export const reparseLogs = async (websiteId: string): Promise<void> => {
+  await client.post<ApiResponse<{ success: boolean }>>('/api/logs/reparse', {
+    id: websiteId,
+  });
+};
+
 const fetchStats = async <T>(type: string, params: Record<string, unknown> = {}): Promise<T> => {
   const response = await client.get<ApiResponse<T>>(`/api/stats/${type}`, {
     params: buildParams(params),

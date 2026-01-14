@@ -26,6 +26,8 @@ var (
 	ipParsing       bool
 )
 
+var ErrParsingInProgress = errors.New("日志解析中，请稍后重试")
+
 // 解析结果
 type ParserResult struct {
 	WebName      string
@@ -126,8 +128,65 @@ func (p *LogParser) ScanNginxLogs() []ParserResult {
 	}
 	defer finishIPParsing()
 
-	// 获取所有网站ID
 	websiteIDs := config.GetAllWebsiteIDs()
+	return p.scanNginxLogsInternal(websiteIDs)
+}
+
+// ScanNginxLogsForWebsite 扫描指定网站的日志文件
+func (p *LogParser) ScanNginxLogsForWebsite(websiteID string) []ParserResult {
+	if !startIPParsing() {
+		return []ParserResult{}
+	}
+	defer finishIPParsing()
+
+	return p.scanNginxLogsInternal([]string{websiteID})
+}
+
+// ResetScanState 重置日志扫描状态
+func (p *LogParser) ResetScanState(websiteID string) {
+	if websiteID == "" {
+		p.states = make(map[string]LogScanState)
+	} else {
+		delete(p.states, websiteID)
+	}
+	p.updateState()
+}
+
+// TriggerReparse 清空指定网站的日志并触发重新解析
+func (p *LogParser) TriggerReparse(websiteID string) error {
+	if !startIPParsing() {
+		return ErrParsingInProgress
+	}
+
+	var ids []string
+	if websiteID == "" {
+		ids = config.GetAllWebsiteIDs()
+	} else {
+		ids = []string{websiteID}
+	}
+
+	var err error
+	if websiteID == "" {
+		err = p.repo.ClearAllLogs()
+	} else {
+		err = p.repo.ClearLogsForWebsite(websiteID)
+	}
+	if err != nil {
+		finishIPParsing()
+		return err
+	}
+
+	p.ResetScanState(websiteID)
+
+	go func() {
+		defer finishIPParsing()
+		p.scanNginxLogsInternal(ids)
+	}()
+
+	return nil
+}
+
+func (p *LogParser) scanNginxLogsInternal(websiteIDs []string) []ParserResult {
 	setParsingTotalBytes(p.calculateTotalBytesToScan(websiteIDs))
 	parserResults := make([]ParserResult, len(websiteIDs))
 
@@ -161,7 +220,6 @@ func (p *LogParser) ScanNginxLogs() []ParserResult {
 		parserResults[i] = parserResult
 	}
 
-	// 2. 更新并保存状态
 	p.updateState()
 
 	return parserResults

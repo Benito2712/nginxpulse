@@ -1,8 +1,10 @@
 package web
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/likaia/nginxpulse/internal/analytics"
@@ -14,7 +16,8 @@ import (
 // 初始化Web路由
 func SetupRoutes(
 	router *gin.Engine,
-	statsFactory *analytics.StatsFactory) {
+	statsFactory *analytics.StatsFactory,
+	logParser *ingest.LogParser) {
 
 	// 获取所有网站列表
 	router.GET("/api/websites", func(c *gin.Context) {
@@ -42,6 +45,54 @@ func SetupRoutes(
 		c.JSON(http.StatusOK, gin.H{
 			"log_parsing":          ingest.IsIPParsing(),
 			"log_parsing_progress": ingest.GetIPParsingProgress(),
+		})
+	})
+
+	router.POST("/api/logs/reparse", func(c *gin.Context) {
+		type reparseRequest struct {
+			ID string `json:"id"`
+		}
+
+		var req reparseRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "请求参数错误",
+			})
+			return
+		}
+
+		websiteID := strings.TrimSpace(req.ID)
+		if websiteID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "缺少站点ID",
+			})
+			return
+		}
+
+		if _, ok := config.GetWebsiteByID(websiteID); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "站点不存在",
+			})
+			return
+		}
+
+		if err := logParser.TriggerReparse(websiteID); err != nil {
+			if errors.Is(err, ingest.ErrParsingInProgress) {
+				c.JSON(http.StatusConflict, gin.H{
+					"error": err.Error(),
+				})
+				return
+			}
+			logrus.WithError(err).Error("触发重新解析失败")
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": fmt.Sprintf("重新解析失败: %v", err),
+			})
+			return
+		}
+
+		statsFactory.ClearCache()
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
 		})
 	})
 

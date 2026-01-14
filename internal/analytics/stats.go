@@ -86,6 +86,11 @@ func (f *StatsFactory) GetManager(managerType string) (StatsManager, bool) {
 	return manager, exists
 }
 
+// ClearCache 清空统计缓存
+func (f *StatsFactory) ClearCache() {
+	f.cache.Clear()
+}
+
 // QueryStats 通过指定类型的管理器查询统计数据
 func (f *StatsFactory) QueryStats(managerType string, query StatsQuery) (StatsResult, error) {
 	// 获取对应的管理器

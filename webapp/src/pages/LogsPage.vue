@@ -14,6 +14,14 @@
           label="站点"
         />
         <ThemeToggle />
+        <Button
+          class="reparse-btn"
+          outlined
+          severity="danger"
+          :label="reparseButtonLabel"
+          :disabled="!currentWebsiteId || reparseLoading || ipParsing"
+          @click="openReparseDialog"
+        />
       </div>
     </header>
 
@@ -148,12 +156,45 @@
         </Button>
       </div>
     </div>
+
+    <Dialog
+      v-model:visible="reparseDialogVisible"
+      modal
+      :closable="!reparseLoading"
+      :dismissableMask="!reparseLoading"
+      class="reparse-dialog"
+      header="重新解析日志"
+    >
+      <div class="reparse-dialog-body">
+        <p>
+          该操作将清空「{{ currentWebsiteLabel }}」现有访问明细，并从日志文件重新解析。
+        </p>
+        <p class="reparse-dialog-note">解析过程不可撤销，可能需要几分钟。</p>
+        <p v-if="reparseError" class="reparse-dialog-error">{{ reparseError }}</p>
+      </div>
+      <template #footer>
+        <Button
+          text
+          severity="secondary"
+          label="取消"
+          :disabled="reparseLoading"
+          @click="reparseDialogVisible = false"
+        />
+        <Button
+          severity="danger"
+          label="继续重新解析"
+          :loading="reparseLoading"
+          @click="confirmReparse"
+        />
+      </template>
+    </Dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { fetchLogs, fetchWebsites } from '@/api';
+import Dialog from 'primevue/dialog';
+import { fetchLogs, fetchWebsites, reparseLogs } from '@/api';
 import type { WebsiteInfo } from '@/api/types';
 import { formatTraffic, getUserPreference, saveUserPreference } from '@/utils';
 import ThemeToggle from '@/components/ThemeToggle.vue';
@@ -172,6 +213,9 @@ const pageSize = ref(Number(getUserPreference('logsPageSize', '100')));
 const currentPage = ref(1);
 const totalPages = ref(0);
 const pageJump = ref<number | null>(null);
+const reparseDialogVisible = ref(false);
+const reparseLoading = ref(false);
+const reparseError = ref('');
 
 const sortFieldOptions = [
   { value: 'timestamp', label: '时间' },
@@ -197,6 +241,13 @@ const ipParsingProgressText = computed(() => {
   }
   return `${ipParsingProgress.value}%`;
 });
+
+const currentWebsiteLabel = computed(() => {
+  const match = websites.value.find((site) => site.id === currentWebsiteId.value);
+  return match?.name || '当前站点';
+});
+
+const reparseButtonLabel = computed(() => (ipParsing.value ? '解析中...' : '重新解析日志'));
 
 function normalizeProgress(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -333,6 +384,33 @@ function applySearch() {
   searchFilter.value = searchInput.value.trim();
   currentPage.value = 1;
   loadLogs();
+}
+
+function openReparseDialog() {
+  reparseError.value = '';
+  reparseDialogVisible.value = true;
+}
+
+async function confirmReparse() {
+  if (!currentWebsiteId.value) {
+    return;
+  }
+  reparseLoading.value = true;
+  reparseError.value = '';
+  try {
+    await reparseLogs(currentWebsiteId.value);
+    reparseDialogVisible.value = false;
+    currentPage.value = 1;
+    await loadLogs();
+  } catch (error) {
+    if (error instanceof Error) {
+      reparseError.value = error.message;
+    } else {
+      reparseError.value = '重新解析失败，请稍后重试';
+    }
+  } finally {
+    reparseLoading.value = false;
+  }
 }
 
 function jumpToPage() {
@@ -589,6 +667,34 @@ function nextPage() {
 
 .page-btn {
   border-radius: 10px;
+}
+
+.reparse-btn {
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+.reparse-dialog :deep(.p-dialog-content) {
+  padding-top: 8px;
+}
+
+.reparse-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.reparse-dialog-note {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.reparse-dialog-error {
+  font-size: 13px;
+  color: var(--error-color);
+  font-weight: 600;
 }
 
 @media (max-width: 900px) {

@@ -13,6 +13,7 @@ var (
 	excludePatterns []*regexp.Regexp
 	excludeIPs      map[string]bool
 	statusCodes     map[int]bool
+	excludePrivate  bool
 )
 
 // InitPVFilters 初始化PV过滤规则
@@ -39,6 +40,11 @@ func InitPVFilters() {
 			continue
 		}
 		excludeIPs[normalized] = true
+	}
+
+	excludePrivate = true
+	if cfg.PVFilter.ExcludeIPs != nil && len(cfg.PVFilter.ExcludeIPs) == 0 {
+		excludePrivate = false
 	}
 }
 
@@ -102,7 +108,7 @@ func ShouldCountAsPageView(statusCode int, path string, ip string) int {
 	normalizedIP := normalizeIP(ip)
 
 	// 过滤内网/保留地址
-	if isPrivateIP(net.ParseIP(normalizedIP)) {
+	if excludePrivate && isPrivateIP(net.ParseIP(normalizedIP)) {
 		return 0
 	}
 

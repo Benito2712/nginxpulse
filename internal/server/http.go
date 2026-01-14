@@ -4,16 +4,18 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"github.com/likaia/nginxpulse/internal/analytics"
-	"github.com/likaia/nginxpulse/internal/web"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/likaia/nginxpulse/internal/analytics"
+	"github.com/likaia/nginxpulse/internal/ingest"
+	"github.com/likaia/nginxpulse/internal/web"
 	"github.com/sirupsen/logrus"
 )
 
 // StartHTTPServer configures and starts the HTTP server in a goroutine.
-func StartHTTPServer(statsFactory *analytics.StatsFactory, addr string) *http.Server {
-	router := buildRouter(statsFactory)
+func StartHTTPServer(statsFactory *analytics.StatsFactory, logParser *ingest.LogParser, addr string) *http.Server {
+	router := buildRouter(statsFactory, logParser)
 	server := &http.Server{
 		Addr:    addr,
 		Handler: router,
@@ -29,7 +31,7 @@ func StartHTTPServer(statsFactory *analytics.StatsFactory, addr string) *http.Se
 	return server
 }
 
-func buildRouter(statsFactory *analytics.StatsFactory) *gin.Engine {
+func buildRouter(statsFactory *analytics.StatsFactory, logParser *ingest.LogParser) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 
@@ -37,13 +39,13 @@ func buildRouter(statsFactory *analytics.StatsFactory) *gin.Engine {
 	router.Use(requestLogger())
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"*"},
-		AllowMethods:     []string{"GET"},
+		AllowMethods:     []string{"GET", "POST"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 	}))
 
-	web.SetupRoutes(router, statsFactory)
+	web.SetupRoutes(router, statsFactory, logParser)
 
 	return router
 }

@@ -52,3 +52,10 @@ func (c *StatsCache) Set(key string, value interface{}) {
 		Timestamp: time.Now(),
 	}
 }
+
+// Clear 清空缓存
+func (c *StatsCache) Clear() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.items = make(map[string]CacheItem)
+}

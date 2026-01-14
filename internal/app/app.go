@@ -48,7 +48,7 @@ func Run() error {
 	statsFactory := analytics.NewStatsFactory(repository)
 
 	cfg := config.ReadConfig()
-	serverHandle := server.StartHTTPServer(statsFactory, cfg.Server.Port)
+	serverHandle := server.StartHTTPServer(statsFactory, logParser, cfg.Server.Port)
 
 	go worker.InitialScan(logParser)
 

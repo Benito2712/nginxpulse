@@ -14,14 +14,6 @@
           label="站点"
         />
         <ThemeToggle />
-        <Button
-          class="reparse-btn"
-          outlined
-          severity="danger"
-          :label="reparseButtonLabel"
-          :disabled="!currentWebsiteId || reparseLoading || ipParsing"
-          @click="openReparseDialog"
-        />
       </div>
     </header>
 
@@ -35,6 +27,14 @@
             @keyup.enter="applySearch"
           />
           <Button class="search-btn" severity="primary" @click="applySearch">搜索</Button>
+          <Button
+            class="reparse-btn"
+            outlined
+            severity="danger"
+            :label="reparseButtonLabel"
+            :disabled="!currentWebsiteId || reparseLoading || ipParsing"
+            @click="openReparseDialog"
+          />
         </div>
         <div class="sort-controls">
           <div class="filter-toggle-container">
@@ -486,6 +486,8 @@ function nextPage() {
 .search-btn {
   font-weight: 600;
   border-radius: 12px;
+  min-width: 90px;
+  padding: 0 16px;
 }
 
 .sort-controls {
@@ -672,6 +674,8 @@ function nextPage() {
 .reparse-btn {
   border-radius: 12px;
   font-weight: 600;
+  min-width: 150px;
+  padding: 0 18px;
 }
 
 .reparse-dialog :deep(.p-dialog-content) {

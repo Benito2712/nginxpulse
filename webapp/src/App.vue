@@ -26,7 +26,7 @@
         <RouterLink to="/realtime" class="menu-item" :class="{ active: isActive('/realtime') }">{{ t('app.menu.realtime') }}</RouterLink>
         <RouterLink to="/logs" class="menu-item" :class="{ active: isActive('/logs') }">{{ t('app.menu.logs') }}</RouterLink>
       </nav>
-      <div class="sidebar-language-compact" role="group" :aria-label="t('app.sidebar.language')">
+      <div class="sidebar-language-compact" role="group" :aria-label="t('app.sidebar.language')" :key="currentLocale">
         <button
           v-for="option in languageOptions"
           :key="option.value"
@@ -55,7 +55,7 @@
         </template>
         <div class="sidebar-language-toggle">
           <div class="sidebar-language-label">{{ t('app.sidebar.language') }}</div>
-          <div class="sidebar-language-group" role="group" :aria-label="t('app.sidebar.language')">
+          <div class="sidebar-language-group" role="group" :aria-label="t('app.sidebar.language')" :key="currentLocale">
             <button
               v-for="option in languageOptions"
               :key="option.value"
@@ -86,7 +86,7 @@
           <a href="https://github.com/likaia/nginxpulse/" target="_blank" rel="noopener">https://github.com/likaia/nginxpulse/</a>
         </span>
       </div>
-      <RouterView />
+      <RouterView :key="`${route.fullPath}-${currentLocale}`" />
     </main>
 
     <div v-if="accessKeyRequired" class="access-gate">
@@ -150,10 +150,13 @@ const accessKeyInput = ref(localStorage.getItem(ACCESS_KEY_STORAGE) || '');
 const accessKeyErrorKey = ref<string | null>(null);
 const accessKeyErrorText = ref('');
 
-const languageOptions = computed(() => [
-  { value: 'zh-CN', label: t('language.zh'), shortLabel: t('language.zhShort'), icon: 'ri-translate-2' },
-  { value: 'en-US', label: t('language.en'), shortLabel: t('language.enShort'), icon: 'ri-global-line' },
-]);
+const languageOptions = computed(() => {
+  const _locale = locale.value;
+  return [
+    { value: 'zh-CN', label: t('language.zh'), shortLabel: t('language.zhShort'), icon: 'ri-translate-2' },
+    { value: 'en-US', label: t('language.en'), shortLabel: t('language.enShort'), icon: 'ri-global-line' },
+  ];
+});
 
 const currentLocale = computed({
   get: () => normalizeLocale(locale.value),

@@ -13,6 +13,13 @@
 - [项目开发技术栈](#项目开发技术栈)
 - [IP 归属地查询策略](#ip-归属地查询策略)
 - [如何使用项目](#如何使用项目)
+  - [1) Docker](#1-docker)
+  - [2) Docker Compose](#2-docker-compose)
+  - [3) 手动构建（前端、后端）](#3-手动构建前端后端)
+  - [4) 单体部署（单进程）](#4-单体部署单进程)
+  - [5) Makefile 常用命令](#5-makefile-常用命令)
+- [多个日志文件如何挂载？](#多个日志文件如何挂载)
+- [访问密钥列表（ACCESS_KEYS）](#访问密钥列表access_keys)
 - [二次开发注意事项](#二次开发注意事项)
 - [目录结构与主要文件](#目录结构与主要文件)
 
@@ -225,6 +232,9 @@ VERSION=v0.4.8 make single
 VERSION=v0.4.8 make backend
 ```
 
+说明：
+- `make single` 产物在 `bin/nginxpulse`，配置在 `bin/configs/nginxpulse_config.json`（端口默认 `:8088`），gzip 示例在 `bin/var/log/gz-log-read-test/`。
+
 ## 多个日志文件如何挂载？
 WEBSITES 它的值是个数组，参数对象中传入网站名、网址、日志路径（这个路径为容器内访问的路径，可按照需求随意指定）。
 参考示例:
@@ -254,6 +264,38 @@ volumes:
 {"logPath": "/share/log/nginx/access-*.log.gz"}
 ```
 项目内提供了 gzip 参考样例：`var/log/gz-log-read-test/`。
+
+## 访问密钥列表（ACCESS_KEYS）
+当 `accessKeys` 配置为非空数组时，访问 UI 和 API 都需要提供密钥。默认值为空数组
+
+配置文件方式（推荐）：
+```json
+{
+  "system": {
+    "accessKeys": ["key-1", "key-2"]
+  }
+}
+```
+
+环境变量方式：
+```bash
+ACCESS_KEYS='["key-1","key-2"]' ./nginxpulse
+```
+
+Docker Compose 方式：
+```yaml
+services:
+  nginxpulse:
+    environment:
+      ACCESS_KEYS: '["key-1","key-2"]'
+```
+
+请求头要求：
+- API 请求需带 `X-NginxPulse-Key: <your-key>`。
+- 前端访问会自动弹窗提示输入密钥（存储在localStorage中）。
+
+关闭密钥：
+- 不配置 `accessKeys` 或配置为空数组即可关闭。
 
 ## 二次开发注意事项
 
@@ -342,6 +384,10 @@ volumes:
 │   │   └── http.go                 # HTTP 服务与中间件
 │   ├── store/
 │   │   └── repository.go           # SQLite 结构与写入
+│   ├── version/
+│   │   └── info.go                 # 版本信息注入
+│   ├── webui/
+│   │   └── dist/                   # 单体嵌入的前端静态资源
 │   └── web/
 │       └── handler.go              # API 路由
 ├── webapp/
@@ -349,10 +395,17 @@ volumes:
 │       └── main.ts                 # 前端入口
 ├── configs/
 │   ├── nginxpulse_config.json      # 核心配置入口
+│   ├── nginxpulse_config.dev.json  # 本地开发配置
 │   └── nginx_frontend.conf         # 内置 Nginx 配置
+├── docs/
+│   └── versioning.md               # 版本管理与发布说明
 ├── scripts/
-│   └── dev_local.sh                # 本地一键启动
+│   ├── build_single.sh             # 单体构建脚本
+│   ├── dev_local.sh                # 本地一键启动
+│   └── publish_docker.sh           # 推送 Docker 镜像
 ├── var/                            # 数据目录（运行时生成/挂载）
+│   └── log/
+│       └── gz-log-read-test/       # gzip 参考日志
 ├── Dockerfile
 └── docker-compose.yml
 ```

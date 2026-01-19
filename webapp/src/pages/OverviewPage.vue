@@ -510,7 +510,7 @@
             {{ t('logs.ipParsing', { progress: detailIpParsingProgressLabel }) }}
           </div>
           <div class="detail-ip-notice" v-if="detailMode === 'logs' && detailParsingPending">
-            {{ t('logs.parsingPending') }}
+            {{ t('logs.backfillParsing', { progress: detailParsingPendingProgressLabel }) }}
           </div>
           <div class="detail-list">
             <div class="table-wrapper">
@@ -823,6 +823,7 @@ const detailError = ref(false);
 const detailIpParsing = ref(false);
 const detailIpParsingProgress = ref<number | null>(null);
 const detailParsingPending = ref(false);
+const detailParsingPendingProgress = ref<number | null>(null);
 const detailIpParsingProgressText = computed(() => {
   if (detailIpParsingProgress.value === null) {
     return '';
@@ -836,6 +837,21 @@ const detailIpParsingProgressLabel = computed(() => {
   return currentLocale.value === 'zh-CN'
     ? `（${detailIpParsingProgressText.value}）`
     : ` (${detailIpParsingProgressText.value})`;
+});
+
+const detailParsingPendingProgressText = computed(() => {
+  if (detailParsingPendingProgress.value === null) {
+    return '';
+  }
+  return t('parsing.progress', { value: detailParsingPendingProgress.value });
+});
+const detailParsingPendingProgressLabel = computed(() => {
+  if (!detailParsingPendingProgressText.value) {
+    return '';
+  }
+  return currentLocale.value === 'zh-CN'
+    ? `（${detailParsingPendingProgressText.value}）`
+    : ` (${detailParsingPendingProgressText.value})`;
 });
 const detailLoadState = ref<'ready' | 'loading' | 'done' | 'error'>('ready');
 const detailHasMore = ref(false);
@@ -1894,6 +1910,9 @@ async function loadDetailLogs(reset: boolean, requestId: number) {
     detailIpParsing.value = Boolean(result.ip_parsing);
     detailIpParsingProgress.value = detailIpParsing.value ? normalizeProgress(result.ip_parsing_progress) : null;
     detailParsingPending.value = Boolean(result.parsing_pending);
+    detailParsingPendingProgress.value = detailParsingPending.value
+      ? normalizeProgress(result.parsing_pending_progress)
+      : null;
     const logs = result.logs || [];
     updateLogRows(logs, reset, scope);
     const pages = result.pagination?.pages || 1;
@@ -1909,6 +1928,7 @@ async function loadDetailLogs(reset: boolean, requestId: number) {
     detailIpParsing.value = false;
     detailIpParsingProgress.value = null;
     detailParsingPending.value = false;
+    detailParsingPendingProgress.value = null;
   } finally {
     if (requestId === detailRequestId) {
       detailLoading.value = false;

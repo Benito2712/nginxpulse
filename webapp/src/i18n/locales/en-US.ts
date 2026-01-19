@@ -269,6 +269,7 @@ const enUS = {
     pageSize: 'Rows per page:',
     ipParsing: 'Parsing IPs{progress}, refresh later',
     parsingPending: 'Selected range is still parsing; data may be incomplete.',
+    backfillParsing: 'Parsing older logs (7+ days) {progress}; range may be incomplete.',
     time: 'Time',
     request: 'Request',
     source: 'Referer',

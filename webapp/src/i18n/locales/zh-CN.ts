@@ -269,6 +269,7 @@ const zhCN = {
     pageSize: '每页行数:',
     ipParsing: '日志IP解析中{progress}，请稍后刷新',
     parsingPending: '所选时间范围仍在解析中，数据可能不完整。',
+    backfillParsing: '历史日志解析中（非最近7天）{progress}，所选范围可能不完整。',
     time: '时间',
     request: '请求',
     source: '来源',

@@ -401,6 +401,16 @@ body.dark-mode .sidebar-footer {
     flex-shrink: 0;
 }
 
+.main-content.logs-page .logs-ip-notice {
+    margin: 0 0 12px;
+    padding: 10px 14px;
+    border-radius: 12px;
+    background: rgba(36, 128, 255, 0.08);
+    color: var(--accent-color);
+    font-size: 13px;
+    font-weight: 500;
+}
+
 .main-content.parsing-lock {
     overflow: hidden;
 }

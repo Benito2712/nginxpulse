@@ -77,11 +77,9 @@
         </div>
       </div>
     </div>
-    <div v-if="ipParsing" class="logs-ip-notice">
-      {{ t('logs.ipParsing', { progress: ipParsingProgressLabel }) }}
-    </div>
-    <div v-if="parsingPending" class="logs-ip-notice">
-      {{ t('logs.parsingPending') }}
+    <div v-if="ipParsing || parsingPending" class="logs-ip-notice">
+      <div v-if="ipParsing">{{ t('logs.ipParsing', { progress: ipParsingProgressLabel }) }}</div>
+      <div v-else>{{ t('logs.backfillParsing', { progress: parsingPendingProgressLabel }) }}</div>
     </div>
 
     <div class="card logs-table-box">
@@ -256,6 +254,7 @@ const loading = ref(false);
 const ipParsing = ref(false);
 const ipParsingProgress = ref<number | null>(null);
 const parsingPending = ref(false);
+const parsingPendingProgress = ref<number | null>(null);
 
 const ipParsingProgressText = computed(() => {
   if (ipParsingProgress.value === null) {
@@ -270,6 +269,21 @@ const ipParsingProgressLabel = computed(() => {
   return currentLocale.value === 'zh-CN'
     ? `（${ipParsingProgressText.value}）`
     : ` (${ipParsingProgressText.value})`;
+});
+
+const parsingPendingProgressText = computed(() => {
+  if (parsingPendingProgress.value === null) {
+    return '';
+  }
+  return t('parsing.progress', { value: parsingPendingProgress.value });
+});
+const parsingPendingProgressLabel = computed(() => {
+  if (!parsingPendingProgressText.value) {
+    return '';
+  }
+  return currentLocale.value === 'zh-CN'
+    ? `（${parsingPendingProgressText.value}）`
+    : ` (${parsingPendingProgressText.value})`;
 });
 
 const currentWebsiteLabel = computed(() => {
@@ -414,6 +428,9 @@ async function loadLogs() {
     ipParsing.value = Boolean(result.ip_parsing);
     ipParsingProgress.value = ipParsing.value ? normalizeProgress(result.ip_parsing_progress) : null;
     parsingPending.value = Boolean(result.parsing_pending);
+    parsingPendingProgress.value = parsingPending.value
+      ? normalizeProgress(result.parsing_pending_progress)
+      : null;
   } catch (error) {
     console.error('加载日志失败:', error);
     rawLogs.value = [];
@@ -421,6 +438,7 @@ async function loadLogs() {
     ipParsing.value = false;
     ipParsingProgress.value = null;
     parsingPending.value = false;
+    parsingPendingProgress.value = null;
   } finally {
     loading.value = false;
   }

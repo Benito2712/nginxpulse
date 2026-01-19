@@ -70,14 +70,15 @@ type ParserResult struct {
 }
 
 type LogScanState struct {
-	Files           map[string]FileState   `json:"files"` // 每个文件的状态
-	Targets         map[string]TargetState `json:"targets,omitempty"`
-	ParsedMinTs     int64                  `json:"parsed_min_ts,omitempty"`
-	ParsedMaxTs     int64                  `json:"parsed_max_ts,omitempty"`
-	LogMinTs        int64                  `json:"log_min_ts,omitempty"`
-	LogMaxTs        int64                  `json:"log_max_ts,omitempty"`
-	RecentCutoffTs  int64                  `json:"recent_cutoff_ts,omitempty"`
-	BackfillPending bool                   `json:"backfill_pending,omitempty"`
+	Files             map[string]FileState   `json:"files"` // 每个文件的状态
+	Targets           map[string]TargetState `json:"targets,omitempty"`
+	ParsedHourBuckets map[int64]bool         `json:"parsed_hour_buckets,omitempty"`
+	ParsedMinTs       int64                  `json:"parsed_min_ts,omitempty"`
+	ParsedMaxTs       int64                  `json:"parsed_max_ts,omitempty"`
+	LogMinTs          int64                  `json:"log_min_ts,omitempty"`
+	LogMaxTs          int64                  `json:"log_max_ts,omitempty"`
+	RecentCutoffTs    int64                  `json:"recent_cutoff_ts,omitempty"`
+	BackfillPending   bool                   `json:"backfill_pending,omitempty"`
 }
 
 type FileState struct {
@@ -200,6 +201,9 @@ func (p *LogParser) loadState() {
 		if state.Targets == nil {
 			state.Targets = make(map[string]TargetState)
 		}
+		if state.ParsedHourBuckets == nil {
+			state.ParsedHourBuckets = make(map[int64]bool)
+		}
 		p.states[websiteID] = state
 		p.refreshWebsiteRanges(websiteID)
 	}
@@ -232,6 +236,9 @@ func (p *LogParser) ensureWebsiteState(websiteID string) LogScanState {
 	if state.Targets == nil {
 		state.Targets = make(map[string]TargetState)
 	}
+	if state.ParsedHourBuckets == nil {
+		state.ParsedHourBuckets = make(map[int64]bool)
+	}
 	return state
 }
 
@@ -256,6 +263,20 @@ func (p *LogParser) deleteFileState(websiteID, filePath string) {
 		return
 	}
 	delete(state.Files, filePath)
+	p.states[websiteID] = state
+}
+
+func (p *LogParser) recordParsedHourBuckets(websiteID string, buckets map[int64]struct{}) {
+	if len(buckets) == 0 {
+		return
+	}
+	state := p.ensureWebsiteState(websiteID)
+	if state.ParsedHourBuckets == nil {
+		state.ParsedHourBuckets = make(map[int64]bool)
+	}
+	for bucket := range buckets {
+		state.ParsedHourBuckets[bucket] = true
+	}
 	p.states[websiteID] = state
 }
 
@@ -293,6 +314,8 @@ func (p *LogParser) refreshWebsiteRanges(websiteID string) {
 	var parsedMin, parsedMax int64
 	var recentCutoff int64
 	backfillPending := false
+	var backfillTotalBytes int64
+	var backfillProcessedBytes int64
 
 	applyState := func(firstTs, lastTs, parsedMinTs, parsedMaxTs, recentCutoffTs int64, backfillDone bool, backfillEnd, backfillOffset int64) {
 		if firstTs > 0 {
@@ -326,6 +349,11 @@ func (p *LogParser) refreshWebsiteRanges(websiteID string) {
 			}
 		}
 	}
+	accumulateBackfill := func(done bool, backfillEnd, backfillOffset, lastSize int64) {
+		total, processed := computeBackfillBytes(done, backfillEnd, backfillOffset, lastSize)
+		backfillTotalBytes += total
+		backfillProcessedBytes += processed
+	}
 
 	for _, fileState := range state.Files {
 		applyState(
@@ -338,6 +366,7 @@ func (p *LogParser) refreshWebsiteRanges(websiteID string) {
 			fileState.BackfillEnd,
 			fileState.BackfillOffset,
 		)
+		accumulateBackfill(fileState.BackfillDone, fileState.BackfillEnd, fileState.BackfillOffset, fileState.LastSize)
 	}
 
 	for _, targetState := range state.Targets {
@@ -351,6 +380,7 @@ func (p *LogParser) refreshWebsiteRanges(websiteID string) {
 			targetState.BackfillEnd,
 			targetState.BackfillOffset,
 		)
+		accumulateBackfill(targetState.BackfillDone, targetState.BackfillEnd, targetState.BackfillOffset, targetState.LastSize)
 	}
 
 	if logMin == 0 && parsedMin > 0 {
@@ -372,13 +402,43 @@ func (p *LogParser) refreshWebsiteRanges(websiteID string) {
 	p.states[websiteID] = state
 
 	UpdateWebsiteParseStatus(websiteID, WebsiteParseStatus{
-		LogMinTs:        logMin,
-		LogMaxTs:        logMax,
-		ParsedMinTs:     parsedMin,
-		ParsedMaxTs:     parsedMax,
-		RecentCutoffTs:  recentCutoff,
-		BackfillPending: backfillPending,
+		LogMinTs:               logMin,
+		LogMaxTs:               logMax,
+		ParsedMinTs:            parsedMin,
+		ParsedMaxTs:            parsedMax,
+		RecentCutoffTs:         recentCutoff,
+		BackfillPending:        backfillPending,
+		BackfillTotalBytes:     backfillTotalBytes,
+		BackfillProcessedBytes: backfillProcessedBytes,
+		ParsedHourBuckets:      state.ParsedHourBuckets,
 	})
+}
+
+func computeBackfillBytes(done bool, backfillEnd, backfillOffset, lastSize int64) (int64, int64) {
+	if done {
+		total := backfillEnd
+		if total <= 0 {
+			total = lastSize
+		}
+		if total <= 0 {
+			return 0, 0
+		}
+		return total, total
+	}
+	if backfillEnd > 0 {
+		processed := backfillOffset
+		if processed < 0 {
+			processed = 0
+		}
+		if processed > backfillEnd {
+			processed = backfillEnd
+		}
+		return backfillEnd, processed
+	}
+	if lastSize > 0 {
+		return lastSize, 0
+	}
+	return 0, 0
 }
 
 // CleanOldLogs 清理保留天数之前的日志数据
@@ -1030,6 +1090,7 @@ func (p *LogParser) parseLogLines(
 	entriesCount := 0
 	var minTs int64
 	var maxTs int64
+	parsedBuckets := make(map[int64]struct{})
 
 	// 批量插入相关
 	batch := make([]store.NginxLogRecord, 0, backfillBatchSize)
@@ -1072,6 +1133,8 @@ func (p *LogParser) parseLogLines(
 			continue
 		}
 		batch = append(batch, *entry)
+		bucket := (ts / 3600) * 3600
+		parsedBuckets[bucket] = struct{}{}
 		if minTs == 0 || ts < minTs {
 			minTs = ts
 		}
@@ -1095,6 +1158,7 @@ func (p *LogParser) parseLogLines(
 		logrus.Errorf("扫描网站 %s 的文件时出错: %v", websiteID, err)
 	}
 
+	p.recordParsedHourBuckets(websiteID, parsedBuckets)
 	return entriesCount, totalBytes, minTs, maxTs // 返回当前文件的日志条数
 }
 
@@ -1115,6 +1179,7 @@ func (p *LogParser) IngestLines(websiteID, sourceID string, lines []string) (int
 	deduped := 0
 	var minTs int64
 	var maxTs int64
+	parsedBuckets := make(map[int64]struct{})
 
 	processBatch := func() error {
 		if len(batch) == 0 {
@@ -1141,6 +1206,8 @@ func (p *LogParser) IngestLines(websiteID, sourceID string, lines []string) (int
 		batch = append(batch, *entry)
 		accepted++
 		ts := entry.Timestamp.Unix()
+		bucket := (ts / 3600) * 3600
+		parsedBuckets[bucket] = struct{}{}
 		if minTs == 0 || ts < minTs {
 			minTs = ts
 		}
@@ -1160,6 +1227,7 @@ func (p *LogParser) IngestLines(websiteID, sourceID string, lines []string) (int
 	}
 
 	if accepted > 0 {
+		p.recordParsedHourBuckets(websiteID, parsedBuckets)
 		targetKey := buildTargetStateKey(sourceID, "stream")
 		state, _ := p.getTargetState(websiteID, targetKey)
 		if state.RecentCutoffTs == 0 {

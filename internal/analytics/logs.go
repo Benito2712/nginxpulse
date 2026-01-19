@@ -33,12 +33,13 @@ type LogEntry struct {
 
 // LogsStats 日志查询结果
 type LogsStats struct {
-	Logs                []LogEntry `json:"logs"`
-	IPParsing           bool       `json:"ip_parsing"`
-	IPParsingProgress   int        `json:"ip_parsing_progress"`
-	ParsingPending      bool       `json:"parsing_pending"`
-	ParsingPendingRange *TimeRange `json:"parsing_pending_range,omitempty"`
-	Pagination          struct {
+	Logs                   []LogEntry `json:"logs"`
+	IPParsing              bool       `json:"ip_parsing"`
+	IPParsingProgress      int        `json:"ip_parsing_progress"`
+	ParsingPending         bool       `json:"parsing_pending"`
+	ParsingPendingRange    *TimeRange `json:"parsing_pending_range,omitempty"`
+	ParsingPendingProgress int        `json:"parsing_pending_progress,omitempty"`
+	Pagination             struct {
 		Total    int `json:"total"`
 		Page     int `json:"page"`
 		PageSize int `json:"pageSize"`
@@ -188,6 +189,9 @@ func (m *LogsStatsManager) Query(query StatsQuery) (StatsResult, error) {
 		pending, pendingRange := computeParsingPending(status, rangeStart, rangeEnd)
 		result.ParsingPending = pending
 		result.ParsingPendingRange = pendingRange
+		if pending {
+			result.ParsingPendingProgress = computePendingProgress(status, rangeStart, rangeEnd)
+		}
 	}
 
 	// 计算分页
@@ -646,6 +650,13 @@ func computeParsingPending(
 		return false, nil
 	}
 
+	if len(status.ParsedHourBuckets) > 0 {
+		progress := computeBucketProgress(status.ParsedHourBuckets, logMin, logMax, rangeStart, rangeEnd)
+		if progress >= 100 {
+			return false, nil
+		}
+	}
+
 	parsedMin := status.ParsedMinTs
 	parsedMax := status.ParsedMaxTs
 	if parsedMin == 0 && status.RecentCutoffTs > 0 {
@@ -684,6 +695,149 @@ func computeParsingPending(
 		return true, nil
 	}
 	return true, &TimeRange{Start: pendingStart, End: pendingEnd}
+}
+
+func computeParsingProgress(
+	status ingest.WebsiteParseStatus,
+	rangeStart, rangeEnd int64,
+) int {
+	logMin := status.LogMinTs
+	logMax := status.LogMaxTs
+	if logMin <= 0 || logMax <= 0 || logMax < logMin {
+		return 0
+	}
+
+	if rangeStart <= 0 {
+		rangeStart = logMin
+	}
+	if rangeEnd <= 0 {
+		rangeEnd = logMax
+	}
+	if rangeEnd < rangeStart {
+		return 0
+	}
+
+	rangeStart = maxInt64(rangeStart, logMin)
+	rangeEnd = minInt64(rangeEnd, logMax)
+	if rangeEnd < rangeStart {
+		return 0
+	}
+
+	parsedMin := status.ParsedMinTs
+	parsedMax := status.ParsedMaxTs
+	if parsedMin == 0 && status.RecentCutoffTs > 0 {
+		parsedMin = status.RecentCutoffTs
+	}
+	if parsedMin == 0 && parsedMax == 0 {
+		return 0
+	}
+	if parsedMin == 0 {
+		parsedMin = parsedMax
+	}
+	if parsedMax == 0 {
+		parsedMax = parsedMin
+	}
+	if parsedMin > parsedMax {
+		parsedMin, parsedMax = parsedMax, parsedMin
+	}
+
+	coverStart := maxInt64(rangeStart, parsedMin)
+	coverEnd := minInt64(rangeEnd, parsedMax)
+	coveredLen := int64(0)
+	if coverEnd >= coverStart {
+		coveredLen = coverEnd - coverStart + 1
+	}
+
+	rangeLen := rangeEnd - rangeStart + 1
+	if rangeLen <= 0 {
+		return 0
+	}
+
+	progress := int((coveredLen * 100) / rangeLen)
+	if progress < 0 {
+		return 0
+	}
+	if progress > 100 {
+		return 100
+	}
+	return progress
+}
+
+func computePendingProgress(
+	status ingest.WebsiteParseStatus,
+	rangeStart, rangeEnd int64,
+) int {
+	if len(status.ParsedHourBuckets) > 0 {
+		progress := computeBucketProgress(status.ParsedHourBuckets, status.LogMinTs, status.LogMaxTs, rangeStart, rangeEnd)
+		if progress >= 0 {
+			return progress
+		}
+	}
+	if status.BackfillTotalBytes > 0 {
+		processed := status.BackfillProcessedBytes
+		if processed < 0 {
+			processed = 0
+		}
+		if processed > status.BackfillTotalBytes {
+			processed = status.BackfillTotalBytes
+		}
+		progress := int((processed * 100) / status.BackfillTotalBytes)
+		if progress < 0 {
+			return 0
+		}
+		if progress > 100 {
+			return 100
+		}
+		return progress
+	}
+	return computeParsingProgress(status, rangeStart, rangeEnd)
+}
+
+func computeBucketProgress(buckets map[int64]bool, logMin, logMax, rangeStart, rangeEnd int64) int {
+	if len(buckets) == 0 {
+		return -1
+	}
+	if logMin <= 0 || logMax <= 0 || logMax < logMin {
+		return -1
+	}
+	if rangeStart <= 0 {
+		rangeStart = logMin
+	}
+	if rangeEnd <= 0 {
+		rangeEnd = logMax
+	}
+	rangeStart = maxInt64(rangeStart, logMin)
+	rangeEnd = minInt64(rangeEnd, logMax)
+	if rangeEnd < rangeStart {
+		return -1
+	}
+
+	startHour := (rangeStart / 3600) * 3600
+	endHour := (rangeEnd / 3600) * 3600
+	if endHour < startHour {
+		return -1
+	}
+
+	totalBuckets := int64((endHour-startHour)/3600 + 1)
+	if totalBuckets <= 0 {
+		return -1
+	}
+
+	parsedBuckets := int64(0)
+	for bucket := startHour; bucket <= endHour; bucket += 3600 {
+		if buckets[bucket] {
+			parsedBuckets++
+		}
+	}
+
+	progress := int((parsedBuckets * 100) / totalBuckets)
+	if progress < 0 {
+		return 0
+	}
+	if progress > 100 {
+		return 100
+	}
+	return progress
 }
 
 func minInt64(a, b int64) int64 {

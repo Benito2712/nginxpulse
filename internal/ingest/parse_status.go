@@ -3,12 +3,15 @@ package ingest
 import "sync"
 
 type WebsiteParseStatus struct {
-	LogMinTs        int64
-	LogMaxTs        int64
-	ParsedMinTs     int64
-	ParsedMaxTs     int64
-	RecentCutoffTs  int64
-	BackfillPending bool
+	LogMinTs               int64
+	LogMaxTs               int64
+	ParsedMinTs            int64
+	ParsedMaxTs            int64
+	RecentCutoffTs         int64
+	BackfillPending        bool
+	BackfillTotalBytes     int64
+	BackfillProcessedBytes int64
+	ParsedHourBuckets      map[int64]bool
 }
 
 var (

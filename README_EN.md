@@ -24,9 +24,12 @@ Lightweight Nginx access log analytics and visualization dashboard with realtime
   - [4) Single Binary Deployment](#4-single-binary-deployment)
   - [5) Makefile Commands](#5-makefile-commands)
 - [Mount Multiple Log Files](#mount-multiple-log-files)
+- [Remote Log Sources (sources)](#remote-log-sources-sources)
+- [Push Agent (Realtime)](#push-agent-realtime)
 - [Custom Log Format](#custom-log-format)
 - [Caddy Log Support](#caddy-log-support)
 - [Access Keys (ACCESS_KEYS)](#access-keys-access_keys)
+- [FAQ](#faq)
 - [Notes for Development](#notes-for-development)
 - [Directory Structure](#directory-structure)
 
@@ -160,7 +163,8 @@ Notes:
 
 Environment variables:
 - `WEBSITES` (required if no config file)
-  - JSON array of websites: `name`, `logPath`, `domains` (optional).
+  - JSON array of websites: `name`, `logPath`, `sources`, `domains` (optional).
+  - When `sources` is set, `logPath` is ignored and remote sources are used.
   - `domains` is used to classify referers as “internal”.
 - `CONFIG_JSON` (optional)
   - Full config JSON string (same as `configs/nginxpulse_config.json`).
@@ -315,6 +319,232 @@ volumes:
 
 Sample logs: `var/log/gz-log-read-test/`.
 
+## Remote Log Sources (sources)
+When logs cannot be mounted locally, configure `sources` in the website config. Once `sources` is set, `logPath` is ignored.
+
+Remote log sources support three access methods:
+1) **Expose logs via HTTP** (Nginx/Apache or custom service)
+2) **SFTP pull** (direct SSH access, no HTTP service needed)
+3) **Object storage (S3/OSS)** (upload/archival to S3-compatible storage)
+
+Common fields:
+- `id`: unique source ID (recommended unique per website).
+- `type`: `local`/`sftp`/`http`/`s3`/`agent`.
+- `mode`:
+  - `poll`: pull by interval (default).
+  - `stream`: stream-only (currently only Push Agent).
+  - `hybrid`: stream + polling fallback (currently non-agent sources still use `poll`).
+- `pollInterval`: polling interval (e.g. `5s`).
+- `pattern`: rotation matcher (glob for SFTP/Local/S3; HTTP uses index JSON).
+- `compression`: `auto`/`gz`/`none`.
+- `parse`: per-source parsing override (see below).
+> `stream` is primarily for Push Agent; other sources fall back to `poll`.
+
+### Option 1: Expose Logs via HTTP
+Best when you can provide HTTP access (internal or protected).
+
+Option A: Serve log files with Nginx/Apache  
+(make sure to restrict access)
+```nginx
+location /logs/ {
+  alias /var/log/nginx/;
+  autoindex on;
+  # use basic auth / IP allowlist
+}
+```
+
+`sources` example:
+```json
+{
+  "id": "http-main",
+  "type": "http",
+  "mode": "poll",
+  "url": "https://logs.example.com/logs/access.log",
+  "rangePolicy": "auto",
+  "pollInterval": "10s"
+}
+```
+
+`rangePolicy`:
+- `auto`: prefer Range, fall back to full download (skips already read bytes).
+- `range`: force Range, error if unsupported.
+- `full`: always download the full file.
+
+Option B: JSON index API  
+Recommended for rotated or `.gz` logs:
+```json
+{
+  "index": {
+    "url": "https://logs.example.com/index.json",
+    "jsonMap": {
+      "items": "items",
+      "path": "path",
+      "size": "size",
+      "mtime": "mtime",
+      "etag": "etag",
+      "compressed": "compressed"
+    }
+  }
+}
+```
+
+Detailed JSON index contract (recommended):
+1) The index endpoint returns a JSON with an array of log objects.
+2) Each object should include at least `path` (a reachable URL).
+3) Provide `size` / `mtime` / `etag` for change detection and to avoid re-parsing.
+4) `mtime` accepts RFC3339 / RFC3339Nano / `2006-01-02 15:04:05` / Unix seconds.
+
+Recommended response:
+```json
+{
+  "items": [
+    {
+      "path": "https://logs.example.com/access-2024-11-03.log.gz",
+      "size": 123456,
+      "mtime": "2024-11-03T13:00:00Z",
+      "etag": "abc123",
+      "compressed": true
+    },
+    {
+      "path": "https://logs.example.com/access.log",
+      "size": 98765,
+      "mtime": 1730638800,
+      "etag": "def456",
+      "compressed": false
+    }
+  ]
+}
+```
+
+If your field names differ, map them via `jsonMap`:
+```json
+{
+  "index": {
+    "url": "https://logs.example.com/index.json",
+    "jsonMap": {
+      "items": "data",
+      "path": "url",
+      "size": "length",
+      "mtime": "updated_at",
+      "etag": "hash",
+      "compressed": "gz"
+    }
+  }
+}
+```
+
+Notes:
+- `path` must be a directly accessible log URL.
+- For `.gz` logs, keep stable `etag`/`size`/`mtime` to avoid duplicate parsing.
+- If Range is unsupported, set `rangePolicy` to `auto` or `full`.
+
+### Option 2: SFTP Pull
+Directly pull logs over SSH/SFTP.
+```json
+{
+  "id": "sftp-main",
+  "type": "sftp",
+  "mode": "poll",
+  "host": "1.2.3.4",
+  "port": 22,
+  "user": "nginx",
+  "auth": { "keyFile": "/secrets/id_rsa" },
+  "path": "/var/log/nginx/access.log",
+  "pattern": "/var/log/nginx/access-*.log.gz",
+  "pollInterval": "5s"
+}
+```
+> auth supports `keyFile` and `password`
+
+### Option 3: Object Storage (S3/OSS)
+Use S3-compatible storage (AWS, Aliyun OSS, Tencent COS).
+```json
+{
+  "id": "s3-main",
+  "type": "s3",
+  "mode": "poll",
+  "endpoint": "https://oss-cn-hangzhou.aliyuncs.com",
+  "bucket": "nginx-logs",
+  "prefix": "prod/access/",
+  "pollInterval": "30s"
+}
+```
+
+### Parse Override (source.parse)
+Use `sources[].parse` when formats differ per source:
+```json
+{
+  "parse": {
+    "logType": "nginx",
+    "logRegex": "^(?P<ip>\\S+) - (?P<user>\\S+) \\[(?P<time>[^\\]]+)\\] \"(?P<request>[^\"]+)\" (?P<status>\\d+) (?P<bytes>\\d+) \"(?P<referer>[^\"]*)\" \"(?P<ua>[^\"]*)\"$",
+    "timeLayout": "02/Jan/2006:15:04:05 -0700"
+  }
+}
+```
+
+## Push Agent (Realtime)
+Best for internal/edge environments where you want to stream lines via a separate process.
+
+You will do things on **two machines**:
+
+### Parsing Server (where NginxPulse runs)
+1) Run nginxpulse (ensure backend `:8089` is reachable).
+2) Recommended: enable access keys via `ACCESS_KEYS` (or `system.accessKeys` in config).
+3) Get the `websiteID` via `GET /api/websites`.
+4) If you need custom parsing for agent logs, add a `type=agent` source for parse override:
+```json
+{
+  "name": "Main",
+  "sources": [
+    {
+      "id": "agent-main",
+      "type": "agent",
+      "parse": {
+        "logFormat": "$remote_addr - $remote_user [$time_local] \"$request\" $status $body_bytes_sent \"$http_referer\" \"$http_user_agent\""
+      }
+    }
+  ]
+}
+```
+
+### Log Server (where logs are stored)
+1) Prepare agent (build or use prebuilt).
+
+Build:
+```bash
+go build -o bin/nginxpulse-agent ./cmd/nginxpulse-agent
+```
+Prebuilt binaries included:
+- `prebuilt/nginxpulse-agent-darwin-arm64`
+- `prebuilt/nginxpulse-agent-linux-amd64`
+
+2) Create config on the log server (use the parsing server address + `websiteID`).
+   - Get `websiteID` from the parsing server:
+     `curl http://<nginxpulse-server>:8089/api/websites`
+     Use the `id` field from the response.
+```json
+{
+  "server": "http://<nginxpulse-server>:8089",
+  "accessKey": "your-key",
+  "websiteID": "abcd",
+  "sourceID": "agent-main",
+  "paths": ["/var/log/nginx/access.log"],
+  "pollInterval": "1s",
+  "batchSize": 200,
+  "flushInterval": "2s"
+}
+```
+
+3) Run the agent:
+```bash
+./bin/nginxpulse-agent -config configs/nginxpulse_agent.json
+```
+
+Notes:
+- The log server must reach `http://<nginxpulse-server>:8089/api/ingest/logs`.
+- For custom parsing, add `type=agent` + matching `id` in `sources` and set `parse`.
+- The agent skips `.gz` files; when log size shrinks it restarts from the beginning.
+
 ## Custom Log Format
 Per-site log formats are supported. You can also set `logType` (`nginx` by default; see Caddy section).
 
@@ -419,6 +649,22 @@ Request header:
 
 Disable:
 - Omit `accessKeys` or set it to an empty array.
+
+## FAQ
+
+1) Log details are empty  
+This is usually a permission issue: the container cannot read host log files. Try granting permissions to your log directory and `nginxpulse_data`:
+```bash
+chmod -R 777 /path/to/logs /path/to/nginxpulse_data
+```
+Then restart the container.
+
+2) Logs exist but PV/UV are zero  
+By default, private IPs are excluded. To include internal traffic, set `PV_EXCLUDE_IPS` to an empty array and restart:
+```bash
+PV_EXCLUDE_IPS='[]'
+```
+After restart, click “Re-parse” in the Log Details page.
 
 ## Notes for Development
 

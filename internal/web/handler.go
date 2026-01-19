@@ -109,6 +109,58 @@ func SetupRoutes(
 		})
 	})
 
+	router.POST("/api/ingest/logs", func(c *gin.Context) {
+		type ingestRequest struct {
+			WebsiteID string   `json:"website_id"`
+			SourceID  string   `json:"source_id"`
+			Lines     []string `json:"lines"`
+		}
+
+		var req ingestRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "请求参数错误",
+			})
+			return
+		}
+
+		websiteID := strings.TrimSpace(req.WebsiteID)
+		if websiteID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "缺少站点ID",
+			})
+			return
+		}
+		if _, ok := config.GetWebsiteByID(websiteID); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "站点不存在",
+			})
+			return
+		}
+		if len(req.Lines) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "日志内容为空",
+			})
+			return
+		}
+
+		accepted, deduped, err := logParser.IngestLines(websiteID, strings.TrimSpace(req.SourceID), req.Lines)
+		if err != nil {
+			logrus.WithError(err).Error("日志推送解析失败")
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": fmt.Sprintf("解析失败: %v", err),
+			})
+			return
+		}
+
+		statsFactory.ClearCache()
+		c.JSON(http.StatusOK, gin.H{
+			"success":  true,
+			"accepted": accepted,
+			"deduped":  deduped,
+		})
+	})
+
 	// 查询接口
 	router.GET("/api/stats/:type", func(c *gin.Context) {
 		statsType := c.Param("type")

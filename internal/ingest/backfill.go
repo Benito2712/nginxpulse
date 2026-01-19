@@ -193,7 +193,7 @@ func (p *LogParser) backfillPlainFile(
 			continue
 		}
 
-		entry, parseErr := p.parseLogLine(websiteID, line)
+		entry, parseErr := p.parseLogLine(websiteID, "", line)
 		if parseErr != nil {
 			if err != nil {
 				continue
@@ -273,7 +273,7 @@ func (p *LogParser) backfillGzipFile(
 	window := parseWindow{maxTs: cutoffTs}
 
 	parserResult := EmptyParserResult("", "")
-	entriesCount, bytesRead, minTs, maxTs := p.parseLogLines(gzReader, websiteID, &parserResult, window)
+	entriesCount, bytesRead, minTs, maxTs := p.parseLogLines(gzReader, websiteID, "", &parserResult, window)
 	budget.consume(bytesRead)
 	state.BackfillDone = true
 	p.updateParsedRange(state, minTs, maxTs)

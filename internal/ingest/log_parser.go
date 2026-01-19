@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha1"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/likaia/nginxpulse/internal/config"
 	"github.com/likaia/nginxpulse/internal/enrich"
+	"github.com/likaia/nginxpulse/internal/ingest/dedup"
 	"github.com/likaia/nginxpulse/internal/store"
 	"github.com/sirupsen/logrus"
 )
@@ -68,13 +70,14 @@ type ParserResult struct {
 }
 
 type LogScanState struct {
-	Files           map[string]FileState `json:"files"` // 每个文件的状态
-	ParsedMinTs     int64                `json:"parsed_min_ts,omitempty"`
-	ParsedMaxTs     int64                `json:"parsed_max_ts,omitempty"`
-	LogMinTs        int64                `json:"log_min_ts,omitempty"`
-	LogMaxTs        int64                `json:"log_max_ts,omitempty"`
-	RecentCutoffTs  int64                `json:"recent_cutoff_ts,omitempty"`
-	BackfillPending bool                 `json:"backfill_pending,omitempty"`
+	Files           map[string]FileState   `json:"files"` // 每个文件的状态
+	Targets         map[string]TargetState `json:"targets,omitempty"`
+	ParsedMinTs     int64                  `json:"parsed_min_ts,omitempty"`
+	ParsedMaxTs     int64                  `json:"parsed_max_ts,omitempty"`
+	LogMinTs        int64                  `json:"log_min_ts,omitempty"`
+	LogMaxTs        int64                  `json:"log_max_ts,omitempty"`
+	RecentCutoffTs  int64                  `json:"recent_cutoff_ts,omitempty"`
+	BackfillPending bool                   `json:"backfill_pending,omitempty"`
 }
 
 type FileState struct {
@@ -89,6 +92,22 @@ type FileState struct {
 	ParsedMinTs    int64 `json:"parsed_min_ts,omitempty"`
 	ParsedMaxTs    int64 `json:"parsed_max_ts,omitempty"`
 	RecentCutoffTs int64 `json:"recent_cutoff_ts,omitempty"`
+}
+
+type TargetState struct {
+	LastOffset     int64  `json:"last_offset"`
+	LastSize       int64  `json:"last_size"`
+	LastModTime    int64  `json:"last_mtime,omitempty"`
+	LastETag       string `json:"last_etag,omitempty"`
+	RecentOffset   int64  `json:"recent_offset,omitempty"`
+	BackfillOffset int64  `json:"backfill_offset,omitempty"`
+	BackfillEnd    int64  `json:"backfill_end,omitempty"`
+	BackfillDone   bool   `json:"backfill_done,omitempty"`
+	FirstTimestamp int64  `json:"first_ts,omitempty"`
+	LastTimestamp  int64  `json:"last_ts,omitempty"`
+	ParsedMinTs    int64  `json:"parsed_min_ts,omitempty"`
+	ParsedMaxTs    int64  `json:"parsed_max_ts,omitempty"`
+	RecentCutoffTs int64  `json:"recent_cutoff_ts,omitempty"`
 }
 
 type parseMode int
@@ -128,7 +147,8 @@ type LogParser struct {
 	states        map[string]LogScanState // 各网站的扫描状态，以网站ID为键
 	demoMode      bool
 	retentionDays int
-	lineParsers   map[string]*logLineParser
+	lineParsers   map[string]*logLineParser // key: websiteID or websiteID:sourceID
+	dedup         *dedup.Cache
 }
 
 // NewLogParser 创建新的日志解析器
@@ -146,6 +166,7 @@ func NewLogParser(userRepoPtr *store.Repository) *LogParser {
 		demoMode:      cfg.System.DemoMode,
 		retentionDays: retentionDays,
 		lineParsers:   make(map[string]*logLineParser),
+		dedup:         dedup.NewCache(100000, 10*time.Minute),
 	}
 	parser.loadState()
 	enrich.InitPVFilters()
@@ -172,7 +193,14 @@ func (p *LogParser) loadState() {
 		p.states = make(map[string]LogScanState)
 	}
 
-	for websiteID := range p.states {
+	for websiteID, state := range p.states {
+		if state.Files == nil {
+			state.Files = make(map[string]FileState)
+		}
+		if state.Targets == nil {
+			state.Targets = make(map[string]TargetState)
+		}
+		p.states[websiteID] = state
 		p.refreshWebsiteRanges(websiteID)
 	}
 }
@@ -194,11 +222,15 @@ func (p *LogParser) ensureWebsiteState(websiteID string) LogScanState {
 	state, ok := p.states[websiteID]
 	if !ok {
 		state = LogScanState{
-			Files: make(map[string]FileState),
+			Files:   make(map[string]FileState),
+			Targets: make(map[string]TargetState),
 		}
 	}
 	if state.Files == nil {
 		state.Files = make(map[string]FileState)
+	}
+	if state.Targets == nil {
+		state.Targets = make(map[string]TargetState)
 	}
 	return state
 }
@@ -227,9 +259,33 @@ func (p *LogParser) deleteFileState(websiteID, filePath string) {
 	p.states[websiteID] = state
 }
 
+func (p *LogParser) getTargetState(websiteID, targetKey string) (TargetState, bool) {
+	state, ok := p.states[websiteID]
+	if !ok || state.Targets == nil {
+		return TargetState{}, false
+	}
+	targetState, ok := state.Targets[targetKey]
+	return targetState, ok
+}
+
+func (p *LogParser) setTargetState(websiteID, targetKey string, targetState TargetState) {
+	state := p.ensureWebsiteState(websiteID)
+	state.Targets[targetKey] = targetState
+	p.states[websiteID] = state
+}
+
+func (p *LogParser) deleteTargetState(websiteID, targetKey string) {
+	state, ok := p.states[websiteID]
+	if !ok || state.Targets == nil {
+		return
+	}
+	delete(state.Targets, targetKey)
+	p.states[websiteID] = state
+}
+
 func (p *LogParser) refreshWebsiteRanges(websiteID string) {
 	state, ok := p.states[websiteID]
-	if !ok || state.Files == nil {
+	if !ok || (state.Files == nil && state.Targets == nil) {
 		return
 	}
 
@@ -238,37 +294,63 @@ func (p *LogParser) refreshWebsiteRanges(websiteID string) {
 	var recentCutoff int64
 	backfillPending := false
 
-	for _, fileState := range state.Files {
-		if fileState.FirstTimestamp > 0 {
-			if logMin == 0 || fileState.FirstTimestamp < logMin {
-				logMin = fileState.FirstTimestamp
+	applyState := func(firstTs, lastTs, parsedMinTs, parsedMaxTs, recentCutoffTs int64, backfillDone bool, backfillEnd, backfillOffset int64) {
+		if firstTs > 0 {
+			if logMin == 0 || firstTs < logMin {
+				logMin = firstTs
 			}
 		}
-		if fileState.LastTimestamp > 0 {
-			if logMax == 0 || fileState.LastTimestamp > logMax {
-				logMax = fileState.LastTimestamp
+		if lastTs > 0 {
+			if logMax == 0 || lastTs > logMax {
+				logMax = lastTs
 			}
 		}
-		if fileState.ParsedMinTs > 0 {
-			if parsedMin == 0 || fileState.ParsedMinTs < parsedMin {
-				parsedMin = fileState.ParsedMinTs
+		if parsedMinTs > 0 {
+			if parsedMin == 0 || parsedMinTs < parsedMin {
+				parsedMin = parsedMinTs
 			}
 		}
-		if fileState.ParsedMaxTs > 0 {
-			if parsedMax == 0 || fileState.ParsedMaxTs > parsedMax {
-				parsedMax = fileState.ParsedMaxTs
+		if parsedMaxTs > 0 {
+			if parsedMax == 0 || parsedMaxTs > parsedMax {
+				parsedMax = parsedMaxTs
 			}
 		}
-		if fileState.RecentCutoffTs > 0 {
-			if recentCutoff == 0 || fileState.RecentCutoffTs < recentCutoff {
-				recentCutoff = fileState.RecentCutoffTs
+		if recentCutoffTs > 0 {
+			if recentCutoff == 0 || recentCutoffTs < recentCutoff {
+				recentCutoff = recentCutoffTs
 			}
 		}
-		if !fileState.BackfillDone {
-			if fileState.BackfillEnd > fileState.BackfillOffset || fileState.BackfillEnd == 0 {
+		if !backfillDone {
+			if backfillEnd > backfillOffset || backfillEnd == 0 {
 				backfillPending = true
 			}
 		}
+	}
+
+	for _, fileState := range state.Files {
+		applyState(
+			fileState.FirstTimestamp,
+			fileState.LastTimestamp,
+			fileState.ParsedMinTs,
+			fileState.ParsedMaxTs,
+			fileState.RecentCutoffTs,
+			fileState.BackfillDone,
+			fileState.BackfillEnd,
+			fileState.BackfillOffset,
+		)
+	}
+
+	for _, targetState := range state.Targets {
+		applyState(
+			targetState.FirstTimestamp,
+			targetState.LastTimestamp,
+			targetState.ParsedMinTs,
+			targetState.ParsedMaxTs,
+			targetState.RecentCutoffTs,
+			targetState.BackfillDone,
+			targetState.BackfillEnd,
+			targetState.BackfillOffset,
+		)
 	}
 
 	if logMin == 0 && parsedMin > 0 {
@@ -416,31 +498,35 @@ func (p *LogParser) scanNginxLogsInternal(websiteIDs []string) []ParserResult {
 
 		website, _ := config.GetWebsiteByID(id)
 		parserResult := EmptyParserResult(website.Name, id)
-		if _, err := p.getLineParser(id); err != nil {
-			parserResult.Success = false
-			parserResult.Error = err
-			parserResults[i] = parserResult
-			continue
-		}
-
-		logPath := website.LogPath
-		if strings.Contains(logPath, "*") {
-			matches, err := filepath.Glob(logPath)
-			if err != nil {
-				errstr := "解析日志路径模式 " + logPath + " 失败: " + err.Error()
-				parserResult.Success = false
-				parserResult.Error = errors.New(errstr)
-			} else if len(matches) == 0 {
-				errstr := "日志路径模式 " + logPath + " 未匹配到任何文件"
-				parserResult.Success = false
-				parserResult.Error = errors.New(errstr)
-			} else {
-				for _, matchPath := range matches {
-					p.scanSingleFile(id, matchPath, &parserResult)
-				}
-			}
+		if len(website.Sources) > 0 {
+			p.scanSources(id, website, &parserResult)
 		} else {
-			p.scanSingleFile(id, logPath, &parserResult)
+			if _, err := p.getLineParser(id); err != nil {
+				parserResult.Success = false
+				parserResult.Error = err
+				parserResults[i] = parserResult
+				continue
+			}
+
+			logPath := website.LogPath
+			if strings.Contains(logPath, "*") {
+				matches, err := filepath.Glob(logPath)
+				if err != nil {
+					errstr := "解析日志路径模式 " + logPath + " 失败: " + err.Error()
+					parserResult.Success = false
+					parserResult.Error = errors.New(errstr)
+				} else if len(matches) == 0 {
+					errstr := "日志路径模式 " + logPath + " 未匹配到任何文件"
+					parserResult.Success = false
+					parserResult.Error = errors.New(errstr)
+				} else {
+					for _, matchPath := range matches {
+						p.scanSingleFile(id, matchPath, &parserResult)
+					}
+				}
+			} else {
+				p.scanSingleFile(id, logPath, &parserResult)
+			}
 		}
 
 		p.refreshWebsiteRanges(id)
@@ -597,7 +683,7 @@ func (p *LogParser) scanSingleFile(
 				if _, err := file.Seek(0, 0); err == nil {
 					if gzReader, err := gzip.NewReader(file); err == nil {
 						entriesCount, _, minTs, maxTs := p.parseLogLines(
-							gzReader, websiteID, parserResult, parseWindow{minTs: cutoffTs},
+							gzReader, websiteID, "", parserResult, parseWindow{minTs: cutoffTs},
 						)
 						gzReader.Close()
 						p.updateParsedRange(&fileState, minTs, maxTs)
@@ -647,7 +733,7 @@ func (p *LogParser) scanSingleFile(
 				logrus.Errorf("无法设置文件读取位置 %s: %v", logPath, err)
 			} else {
 				entriesCount, _, minTs, maxTs := p.parseLogLines(
-					file, websiteID, parserResult, parseWindow{minTs: cutoffTs},
+					file, websiteID, "", parserResult, parseWindow{minTs: cutoffTs},
 				)
 				p.updateParsedRange(&fileState, minTs, maxTs)
 				if maxTs > fileState.LastTimestamp {
@@ -712,7 +798,7 @@ func (p *LogParser) scanSingleFile(
 		reader = file
 	}
 
-	entriesCount, bytesRead, minTs, maxTs := p.parseLogLines(reader, websiteID, parserResult, parseWindow{})
+	entriesCount, bytesRead, minTs, maxTs := p.parseLogLines(reader, websiteID, "", parserResult, parseWindow{})
 	if closer != nil {
 		closer.Close()
 	}
@@ -939,7 +1025,7 @@ func (p *LogParser) findRecentOffset(
 
 // parseLogLines 解析日志行并返回解析的记录数
 func (p *LogParser) parseLogLines(
-	reader io.Reader, websiteID string, parserResult *ParserResult, window parseWindow) (int, int64, int64, int64) {
+	reader io.Reader, websiteID, sourceID string, parserResult *ParserResult, window parseWindow) (int, int64, int64, int64) {
 	scanner := bufio.NewScanner(reader)
 	entriesCount := 0
 	var minTs int64
@@ -977,7 +1063,7 @@ func (p *LogParser) parseLogLines(
 			pendingBytes = 0
 		}
 
-		entry, err := p.parseLogLine(websiteID, line)
+		entry, err := p.parseLogLine(websiteID, sourceID, line)
 		if err != nil {
 			continue
 		}
@@ -1012,6 +1098,91 @@ func (p *LogParser) parseLogLines(
 	return entriesCount, totalBytes, minTs, maxTs // 返回当前文件的日志条数
 }
 
+// IngestLines parses and inserts streamed log lines for a website/source.
+func (p *LogParser) IngestLines(websiteID, sourceID string, lines []string) (int, int, error) {
+	if websiteID == "" {
+		return 0, 0, errors.New("websiteID 不能为空")
+	}
+	if len(lines) == 0 {
+		return 0, 0, nil
+	}
+	if _, err := p.getLineParserForSource(websiteID, sourceID); err != nil {
+		return 0, 0, err
+	}
+
+	batch := make([]store.NginxLogRecord, 0, backfillBatchSize)
+	accepted := 0
+	deduped := 0
+	var minTs int64
+	var maxTs int64
+
+	processBatch := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		p.fillBatchLocations(batch)
+		if err := p.repo.BatchInsertLogsForWebsite(websiteID, batch); err != nil {
+			return err
+		}
+		batch = batch[:0]
+		return nil
+	}
+
+	for _, line := range lines {
+		entry, err := p.parseLogLine(websiteID, sourceID, line)
+		if err != nil {
+			continue
+		}
+		key := buildDedupKey(websiteID, sourceID, line)
+		if p.dedup != nil && p.dedup.Seen(key) {
+			deduped++
+			continue
+		}
+		batch = append(batch, *entry)
+		accepted++
+		ts := entry.Timestamp.Unix()
+		if minTs == 0 || ts < minTs {
+			minTs = ts
+		}
+		if ts > maxTs {
+			maxTs = ts
+		}
+
+		if len(batch) >= backfillBatchSize {
+			if err := processBatch(); err != nil {
+				return accepted, deduped, err
+			}
+		}
+	}
+
+	if err := processBatch(); err != nil {
+		return accepted, deduped, err
+	}
+
+	if accepted > 0 {
+		targetKey := buildTargetStateKey(sourceID, "stream")
+		state, _ := p.getTargetState(websiteID, targetKey)
+		if state.RecentCutoffTs == 0 {
+			state.RecentCutoffTs = time.Now().AddDate(0, 0, -recentLogWindowDays).Unix()
+		}
+		updateTargetParsedRange(&state, minTs, maxTs)
+		state.BackfillDone = true
+		p.setTargetState(websiteID, targetKey, state)
+		p.refreshWebsiteRanges(websiteID)
+		p.updateState()
+	}
+
+	return accepted, deduped, nil
+}
+
+func buildDedupKey(websiteID, sourceID, line string) string {
+	hash := sha1.Sum([]byte(line))
+	if sourceID == "" {
+		return fmt.Sprintf("%s:%x", websiteID, hash[:])
+	}
+	return fmt.Sprintf("%s:%s:%x", websiteID, sourceID, hash[:])
+}
+
 func (p *LogParser) fillBatchLocations(batch []store.NginxLogRecord) {
 	ips := make([]string, 0, len(batch))
 	for _, entry := range batch {
@@ -1043,7 +1214,15 @@ func skipReaderBytes(reader io.Reader, offset int64) error {
 }
 
 func (p *LogParser) getLineParser(websiteID string) (*logLineParser, error) {
-	if parser, ok := p.lineParsers[websiteID]; ok {
+	return p.getLineParserForSource(websiteID, "")
+}
+
+func (p *LogParser) getLineParserForSource(websiteID, sourceID string) (*logLineParser, error) {
+	key := websiteID
+	if sourceID != "" {
+		key = websiteID + ":" + sourceID
+	}
+	if parser, ok := p.lineParsers[key]; ok {
 		return parser, nil
 	}
 
@@ -1052,17 +1231,46 @@ func (p *LogParser) getLineParser(websiteID string) (*logLineParser, error) {
 		return nil, fmt.Errorf("未找到网站配置: %s", websiteID)
 	}
 
-	parser, err := newLogLineParser(website)
+	var sourceCfg *config.SourceConfig
+	if sourceID != "" {
+		for i := range website.Sources {
+			if strings.TrimSpace(website.Sources[i].ID) == sourceID {
+				sourceCfg = &website.Sources[i]
+				break
+			}
+		}
+	}
+
+	parser, err := newLogLineParser(website, sourceCfg)
 	if err != nil {
 		return nil, err
 	}
 
-	p.lineParsers[websiteID] = parser
+	p.lineParsers[key] = parser
 	return parser, nil
 }
 
-func newLogLineParser(website config.WebsiteConfig) (*logLineParser, error) {
+func newLogLineParser(website config.WebsiteConfig, sourceCfg *config.SourceConfig) (*logLineParser, error) {
 	logType := strings.ToLower(strings.TrimSpace(website.LogType))
+	logFormat := website.LogFormat
+	logRegex := website.LogRegex
+	timeLayout := website.TimeLayout
+
+	if sourceCfg != nil && sourceCfg.Parse != nil {
+		parseOverride := sourceCfg.Parse
+		if strings.TrimSpace(parseOverride.LogType) != "" {
+			logType = strings.ToLower(strings.TrimSpace(parseOverride.LogType))
+		}
+		if strings.TrimSpace(parseOverride.LogFormat) != "" {
+			logFormat = parseOverride.LogFormat
+		}
+		if strings.TrimSpace(parseOverride.LogRegex) != "" {
+			logRegex = parseOverride.LogRegex
+		}
+		if strings.TrimSpace(parseOverride.TimeLayout) != "" {
+			timeLayout = parseOverride.TimeLayout
+		}
+	}
 	if logType == "" {
 		logType = "nginx"
 	}
@@ -1071,11 +1279,11 @@ func newLogLineParser(website config.WebsiteConfig) (*logLineParser, error) {
 	source := "default"
 	parseType := parseTypeRegex
 
-	if strings.TrimSpace(website.LogRegex) != "" {
-		pattern = ensureAnchors(website.LogRegex)
+	if strings.TrimSpace(logRegex) != "" {
+		pattern = ensureAnchors(logRegex)
 		source = "logRegex"
-	} else if strings.TrimSpace(website.LogFormat) != "" {
-		compiled, err := buildRegexFromFormat(website.LogFormat)
+	} else if strings.TrimSpace(logFormat) != "" {
+		compiled, err := buildRegexFromFormat(logFormat)
 		if err != nil {
 			return nil, err
 		}
@@ -1083,7 +1291,7 @@ func newLogLineParser(website config.WebsiteConfig) (*logLineParser, error) {
 		source = "logFormat"
 	} else if logType == "caddy" {
 		return &logLineParser{
-			timeLayout: website.TimeLayout,
+			timeLayout: timeLayout,
 			source:     "caddy",
 			parseType:  parseTypeCaddyJSON,
 		}, nil
@@ -1110,7 +1318,7 @@ func newLogLineParser(website config.WebsiteConfig) (*logLineParser, error) {
 	return &logLineParser{
 		regex:      regex,
 		indexMap:   indexMap,
-		timeLayout: website.TimeLayout,
+		timeLayout: timeLayout,
 		source:     source,
 		parseType:  parseType,
 	}, nil
@@ -1224,8 +1432,8 @@ func hasAnyField(indexMap map[string]int, aliases []string) bool {
 }
 
 // parseLogLine 解析单行日志
-func (p *LogParser) parseLogLine(websiteID string, line string) (*store.NginxLogRecord, error) {
-	parser, err := p.getLineParser(websiteID)
+func (p *LogParser) parseLogLine(websiteID, sourceID string, line string) (*store.NginxLogRecord, error) {
+	parser, err := p.getLineParserForSource(websiteID, sourceID)
 	if err != nil {
 		return nil, err
 	}

@@ -112,6 +112,15 @@ func validateConfig() bool {
 		// 检查每个日志文件是否存在
 		var missingLogs []string
 		for _, site := range cfg.Websites {
+			if len(site.Sources) > 0 {
+				if err := validateSources(site.Sources); err != nil {
+					fmt.Fprintf(os.Stderr, "配置文件错误: %v\n", err)
+					fmt.Fprintf(os.Stderr, "请修正配置问题后重新启动服务\n")
+					return true
+				}
+				continue
+			}
+
 			if site.LogPath == "" {
 				missingLogs = append(missingLogs,
 					fmt.Sprintf("'%s' (缺少日志文件路径配置)", site.Name))
@@ -161,6 +170,72 @@ func validateConfig() bool {
 	}
 
 	return false
+}
+
+func validateSources(sources []config.SourceConfig) error {
+	seen := map[string]struct{}{}
+	for i, source := range sources {
+		id := strings.TrimSpace(source.ID)
+		if id == "" {
+			return fmt.Errorf("sources[%d].id 不能为空", i)
+		}
+		if _, ok := seen[id]; ok {
+			return fmt.Errorf("sources[%d].id 重复: %s", i, id)
+		}
+		seen[id] = struct{}{}
+
+		stype := strings.ToLower(strings.TrimSpace(source.Type))
+		if stype == "" {
+			return fmt.Errorf("sources[%d].type 不能为空", i)
+		}
+
+		mode := strings.ToLower(strings.TrimSpace(source.Mode))
+		if mode != "" && mode != "poll" && mode != "stream" && mode != "hybrid" {
+			return fmt.Errorf("sources[%d].mode 不支持: %s", i, source.Mode)
+		}
+
+		switch stype {
+		case "local":
+			if strings.TrimSpace(source.Path) == "" && strings.TrimSpace(source.Pattern) == "" {
+				return fmt.Errorf("sources[%d] local 需要 path 或 pattern", i)
+			}
+		case "sftp":
+			if strings.TrimSpace(source.Host) == "" || strings.TrimSpace(source.User) == "" {
+				return fmt.Errorf("sources[%d] sftp 需要 host/user", i)
+			}
+			if strings.TrimSpace(source.Path) == "" && strings.TrimSpace(source.Pattern) == "" {
+				return fmt.Errorf("sources[%d] sftp 需要 path 或 pattern", i)
+			}
+		case "http":
+			url := strings.TrimSpace(source.URL)
+			indexURL := ""
+			if source.Index != nil {
+				indexURL = strings.TrimSpace(source.Index.URL)
+			}
+			if url == "" && indexURL == "" {
+				return fmt.Errorf("sources[%d] http 需要 url 或 index.url", i)
+			}
+			if source.RangePolicy != "" {
+				policy := strings.ToLower(strings.TrimSpace(source.RangePolicy))
+				if policy != "auto" && policy != "range" && policy != "full" {
+					return fmt.Errorf("sources[%d] http rangePolicy 不支持: %s", i, source.RangePolicy)
+				}
+			}
+		case "s3":
+			if strings.TrimSpace(source.Bucket) == "" {
+				return fmt.Errorf("sources[%d] s3 需要 bucket", i)
+			}
+			if strings.TrimSpace(source.Prefix) == "" && strings.TrimSpace(source.Pattern) == "" {
+				return fmt.Errorf("sources[%d] s3 需要 prefix 或 pattern", i)
+			}
+		case "agent":
+			// agent 仅用于解析覆盖，不做本地校验
+		default:
+			return fmt.Errorf("sources[%d] type 不支持: %s", i, source.Type)
+		}
+	}
+
+	return nil
 }
 
 // cleanService 清理 nginxpulse 服务、释放端口和删除数据

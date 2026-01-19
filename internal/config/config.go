@@ -27,13 +27,58 @@ type Config struct {
 }
 
 type WebsiteConfig struct {
-	Name       string   `json:"name"`
-	LogPath    string   `json:"logPath"`
-	Domains    []string `json:"domains,omitempty"`
-	LogType    string   `json:"logType,omitempty"`
-	LogFormat  string   `json:"logFormat,omitempty"`
-	LogRegex   string   `json:"logRegex,omitempty"`
-	TimeLayout string   `json:"timeLayout,omitempty"`
+	Name       string         `json:"name"`
+	LogPath    string         `json:"logPath"`
+	Domains    []string       `json:"domains,omitempty"`
+	LogType    string         `json:"logType,omitempty"`
+	LogFormat  string         `json:"logFormat,omitempty"`
+	LogRegex   string         `json:"logRegex,omitempty"`
+	TimeLayout string         `json:"timeLayout,omitempty"`
+	Sources    []SourceConfig `json:"sources,omitempty"`
+}
+
+type SourceConfig struct {
+	ID           string            `json:"id"`
+	Type         string            `json:"type"`
+	Mode         string            `json:"mode,omitempty"`
+	PollInterval string            `json:"pollInterval,omitempty"`
+	Path         string            `json:"path,omitempty"`
+	Pattern      string            `json:"pattern,omitempty"`
+	Compression  string            `json:"compression,omitempty"`
+	Parse        *ParseConfig      `json:"parse,omitempty"`
+	Host         string            `json:"host,omitempty"`
+	Port         int               `json:"port,omitempty"`
+	User         string            `json:"user,omitempty"`
+	Auth         *SourceAuth       `json:"auth,omitempty"`
+	URL          string            `json:"url,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	RangePolicy  string            `json:"rangePolicy,omitempty"`
+	Index        *HTTPIndexConfig  `json:"index,omitempty"`
+	Endpoint     string            `json:"endpoint,omitempty"`
+	Region       string            `json:"region,omitempty"`
+	Bucket       string            `json:"bucket,omitempty"`
+	Prefix       string            `json:"prefix,omitempty"`
+	AccessKey    string            `json:"accessKey,omitempty"`
+	SecretKey    string            `json:"secretKey,omitempty"`
+}
+
+type SourceAuth struct {
+	KeyFile  string `json:"keyFile,omitempty"`
+	Password string `json:"password,omitempty"`
+}
+
+type HTTPIndexConfig struct {
+	URL     string            `json:"url"`
+	Method  string            `json:"method,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	JSONMap map[string]string `json:"jsonMap,omitempty"`
+}
+
+type ParseConfig struct {
+	LogType    string `json:"logType,omitempty"`
+	LogFormat  string `json:"logFormat,omitempty"`
+	LogRegex   string `json:"logRegex,omitempty"`
+	TimeLayout string `json:"timeLayout,omitempty"`
 }
 
 type SystemConfig struct {

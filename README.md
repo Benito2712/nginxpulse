@@ -23,9 +23,12 @@
   - [4) 单体部署（单进程）](#4-单体部署单进程)
   - [5) Makefile 常用命令](#5-makefile-常用命令)
 - [多个日志文件如何挂载？](#多个日志文件如何挂载)
+- [远端日志支持（sources）](#远端日志支持sources)
+- [Push Agent（实时推送）](#push-agent实时推送)
 - [自定义日志格式](#自定义日志格式)
 - [Caddy 日志支持](#caddy-日志支持)
 - [访问密钥列表（ACCESS_KEYS）](#访问密钥列表access_keys)
+- [常见问题](#常见问题)
 - [二次开发注意事项](#二次开发注意事项)
 - [目录结构与主要文件](#目录结构与主要文件)
 
@@ -159,7 +162,8 @@ services:
 
 参数说明（环境变量）：
 - `WEBSITES`（必填，无配置文件时）
-  - 网站列表 JSON 数组，字段：`name`、`logPath`、`domains`（可选）。
+  - 网站列表 JSON 数组，字段：`name`、`logPath`、`sources`、`domains`（可选）。
+  - 当配置 `sources` 时将忽略 `logPath`，并以远端来源作为日志输入。
   - `domains` 用于将 referer 归类为“站内访问”，不影响日志解析与 PV 过滤。
 - `CONFIG_JSON`（可选）
   - 完整配置 JSON 字符串（等同于 `configs/nginxpulse_config.json` 内容）。
@@ -307,6 +311,232 @@ volumes:
 ```
 项目内提供了 gzip 参考样例：`var/log/gz-log-read-test/`。
 
+## 远端日志支持（sources）
+当日志不方便挂载到本机/容器时，可以在网站配置中使用 `sources` 替代 `logPath`。一旦配置 `sources`，`logPath` 会被忽略。
+
+远端日志支持三种接入方式（按你现网条件选择）：
+1) **HTTP 服务暴露日志**（自己部署或用 Nginx/Apache）
+2) **SFTP 直连拉取**（无需额外 HTTP 服务）
+3) **对象存储（S3/OSS）**（上传/归档到对象存储）
+
+通用字段：
+- `id`：来源唯一标识（建议全站唯一）。
+- `type`：`local`/`sftp`/`http`/`s3`/`agent`。
+- `mode`：
+  - `poll`：按间隔拉取（默认）。
+  - `stream`：仅流式输入（当前仅 Push Agent 生效）。
+  - `hybrid`：流式 + 轮询兜底（当前仅 Push Agent 会流式，其它来源仍按 `poll`）。
+- `pollInterval`：轮询间隔（如 `5s`）。
+- `pattern`：轮转匹配（SFTP/Local/S3 使用 glob；HTTP 依赖 index JSON）。
+- `compression`：`auto`/`gz`/`none`。
+- `parse`：覆盖解析格式（见下文“解析覆盖”）。
+> `stream` 模式目前主要用于 Push Agent，其它来源会按 `poll` 处理。
+
+### 方案一：HTTP 服务暴露日志
+适合你能在日志服务器上提供 HTTP 访问（内网或加鉴权）的场景。
+
+方式 A：Nginx/Apache 直接暴露日志文件  
+（需设置访问限制，避免日志泄露）
+```nginx
+location /logs/ {
+  alias /var/log/nginx/;
+  autoindex on;
+  # 建议加 basic auth / IP 白名单
+}
+```
+
+然后在 `sources` 配置：
+```json
+{
+  "id": "http-main",
+  "type": "http",
+  "mode": "poll",
+  "url": "https://logs.example.com/logs/access.log",
+  "rangePolicy": "auto",
+  "pollInterval": "10s"
+}
+```
+
+`rangePolicy` 说明：
+- `auto`：优先 Range，不支持则自动回退为整包下载（会跳过已读字节）。
+- `range`：强制 Range，不支持则报错。
+- `full`：始终整包下载。
+
+方式 B：自建 JSON 索引 API  
+适合轮转日志（按天/按小时）或 `.gz` 归档：
+```json
+{
+  "index": {
+    "url": "https://logs.example.com/index.json",
+    "jsonMap": {
+      "items": "items",
+      "path": "path",
+      "size": "size",
+      "mtime": "mtime",
+      "etag": "etag",
+      "compressed": "compressed"
+    }
+  }
+}
+```
+
+更详细的索引 API 约定（建议）：
+1) 索引接口返回一个 JSON，包含日志对象数组。
+2) 每条对象至少提供 `path`（可访问 URL）。
+3) 建议提供 `size` / `mtime` / `etag`，用于变更检测与避免重复解析。
+4) `mtime` 支持 RFC3339 / RFC3339Nano / `2006-01-02 15:04:05` / Unix 秒时间戳。
+
+推荐返回示例：
+```json
+{
+  "items": [
+    {
+      "path": "https://logs.example.com/access-2024-11-03.log.gz",
+      "size": 123456,
+      "mtime": "2024-11-03T13:00:00Z",
+      "etag": "abc123",
+      "compressed": true
+    },
+    {
+      "path": "https://logs.example.com/access.log",
+      "size": 98765,
+      "mtime": 1730638800,
+      "etag": "def456",
+      "compressed": false
+    }
+  ]
+}
+```
+
+如果你的字段名不同，可以在 `jsonMap` 中映射：
+```json
+{
+  "index": {
+    "url": "https://logs.example.com/index.json",
+    "jsonMap": {
+      "items": "data",
+      "path": "url",
+      "size": "length",
+      "mtime": "updated_at",
+      "etag": "hash",
+      "compressed": "gz"
+    }
+  }
+}
+```
+
+注意事项：
+- `path` 必须是可直接访问的日志 URL。
+- `.gz` 文件建议提供稳定的 `etag`/`size`/`mtime`，否则可能重复解析。
+- 如果 HTTP 服务不支持 Range，建议将 `rangePolicy` 设置为 `auto` 或 `full`。
+
+### 方案二：SFTP 直连拉取
+适合你能开放 SSH/SFTP 端口的场景，无需额外 HTTP 服务。
+```json
+{
+  "id": "sftp-main",
+  "type": "sftp",
+  "mode": "poll",
+  "host": "1.2.3.4",
+  "port": 22,
+  "user": "nginx",
+  "auth": { "keyFile": "/secrets/id_rsa" },
+  "path": "/var/log/nginx/access.log",
+  "pattern": "/var/log/nginx/access-*.log.gz",
+  "pollInterval": "5s"
+}
+```
+> auth 支持 `keyFile` 和 `password` 两种方式
+
+### 方案三：对象存储（S3/OSS）
+适合日志统一归档到 OSS/S3（支持阿里云/腾讯云/AWS 兼容端点）。
+```json
+{
+  "id": "s3-main",
+  "type": "s3",
+  "mode": "poll",
+  "endpoint": "https://oss-cn-hangzhou.aliyuncs.com",
+  "bucket": "nginx-logs",
+  "prefix": "prod/access/",
+  "pollInterval": "30s"
+}
+```
+
+### 解析覆盖（source.parse）
+当同一站点不同来源日志格式不一致时，可在 `sources[].parse` 内覆盖：
+```json
+{
+  "parse": {
+    "logType": "nginx",
+    "logRegex": "^(?P<ip>\\S+) - (?P<user>\\S+) \\[(?P<time>[^\\]]+)\\] \"(?P<request>[^\"]+)\" (?P<status>\\d+) (?P<bytes>\\d+) \"(?P<referer>[^\"]*)\" \"(?P<ua>[^\"]*)\"$",
+    "timeLayout": "02/Jan/2006:15:04:05 -0700"
+  }
+}
+```
+
+## Push Agent（实时推送）
+适合内网/边缘节点场景，通过独立进程实时推送日志行：
+
+你需要在 **两台机器** 上分别做以下事：
+
+### 解析服务器（运行 NginxPulse 的机器）
+1) 启动 nginxpulse（确保后端 `:8089` 可访问）。
+2) 建议启用访问密钥：设置 `ACCESS_KEYS`（或配置文件 `system.accessKeys`）。
+3) 获取 `websiteID`：请求 `GET /api/websites`。
+4) 如需为 agent 指定解析格式，在站点配置中添加 `type=agent` 的 source（仅用于解析覆盖）：
+```json
+{
+  "name": "主站",
+  "sources": [
+    {
+      "id": "agent-main",
+      "type": "agent",
+      "parse": {
+        "logFormat": "$remote_addr - $remote_user [$time_local] \"$request\" $status $body_bytes_sent \"$http_referer\" \"$http_user_agent\""
+      }
+    }
+  ]
+}
+```
+
+### 日志服务器（存放日志的机器）
+1) 准备 agent（构建或使用预构建）。
+
+构建：
+```bash
+go build -o bin/nginxpulse-agent ./cmd/nginxpulse-agent
+```
+仓库已提供预构建二进制：
+- `prebuilt/nginxpulse-agent-darwin-arm64`
+- `prebuilt/nginxpulse-agent-linux-amd64`
+
+2) 在日志服务器上创建配置文件（填写解析服务器地址与 `websiteID`）。
+   - `websiteID` 在解析服务器上通过接口获取：
+     `curl http://<nginxpulse-server>:8089/api/websites`
+     返回的 `id` 字段就是 `websiteID`。
+```json
+{
+  "server": "http://<nginxpulse-server>:8089",
+  "accessKey": "your-key",
+  "websiteID": "abcd",
+  "sourceID": "agent-main",
+  "paths": ["/var/log/nginx/access.log"],
+  "pollInterval": "1s",
+  "batchSize": 200,
+  "flushInterval": "2s"
+}
+```
+
+3) 运行 agent：
+```bash
+./bin/nginxpulse-agent -config configs/nginxpulse_agent.json
+```
+
+注意事项：
+- 日志服务器需要能访问解析服务器的 `http://<nginxpulse-server>:8089/api/ingest/logs`。
+- 如需为 agent 指定解析格式，可在 `sources` 内配置 `type=agent` 且 `id=sourceID`，并填写 `parse` 覆盖。
+- agent 会跳过 `.gz` 文件；日志轮转导致文件变小会自动从头开始读取。
+
 ## 自定义日志格式
 支持为每个网站单独配置日志格式，也可以指定日志类型 `logType`（默认 `nginx`，Caddy 见下节）。
 
@@ -410,6 +640,22 @@ services:
 
 关闭密钥：
 - 不配置 `accessKeys` 或配置为空数组即可关闭。
+
+## 常见问题
+
+1) 日志明细无内容  
+通常是容器内无权限访问宿主机日志文件。请尝试为宿主机日志目录与 `nginxpulse_data` 目录赋权：
+```bash
+chmod -R 777 /path/to/logs /path/to/nginxpulse_data
+```
+然后重启容器。
+
+2) 日志存在，但 PV/UV 无法统计  
+默认规则会排除内网 IP。若你希望统计内网流量，请将 `PV_EXCLUDE_IPS` 设为空数组并重启：
+```bash
+PV_EXCLUDE_IPS='[]'
+```
+重启后在“日志明细”页面点击“重新解析”按钮。
 
 ## 二次开发注意事项
 

@@ -29,6 +29,7 @@ docker run -d --name nginxpulse \
 如果你想外接自建 PG，可显式传入 `DB_DSN`，内置 PG 会被绕过。
 此时不会启动内置 PG，`POSTGRES_*` 参数会被忽略，`/app/var/pgdata` 也无需挂载。
 
+
 ## Docker Compose
 仓库根目录已提供 `docker-compose.yml`，可直接复制修改：
 - 调整 `WEBSITES` 与日志挂载路径。

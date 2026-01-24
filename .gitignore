@@ -1,6 +1,7 @@
 diff.patch
 var/nginxpulse_data/
 bin/
+docker_local/
 weblog_eg/
 /nginxpulse
 /nginxpulse.exe

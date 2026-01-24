@@ -7,7 +7,7 @@ RUN cd webapp && npm install
 COPY webapp ./webapp
 RUN cd webapp && npm run build
 
-FROM golang:1.23.6-alpine AS backend-builder
+FROM golang:1.24.0-alpine AS backend-builder
 
 WORKDIR /src
 COPY go.mod go.sum ./

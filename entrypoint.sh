@@ -77,6 +77,9 @@ init_postgres() {
 
   echo "nginxpulse: initializing postgres data dir at $PGDATA"
   PWFILE="$(mktemp)"
+  # Ensure the postgres user can read the password file created by root.
+  chown "$APP_USER:$APP_GROUP" "$PWFILE" 2>/dev/null || true
+  chmod 600 "$PWFILE" 2>/dev/null || true
   printf '%s' "$POSTGRES_PASSWORD" > "$PWFILE"
   su-exec "$APP_USER:$APP_GROUP" initdb -D "$PGDATA" \
     --username="$POSTGRES_USER" \
@@ -87,6 +90,11 @@ init_postgres() {
 }
 
 start_postgres() {
+  if [ "$(id -u)" = "0" ]; then
+    mkdir -p /run/postgresql
+    chown "$APP_USER:$APP_GROUP" /run/postgresql 2>/dev/null || true
+    chmod 775 /run/postgresql 2>/dev/null || true
+  fi
   su-exec "$APP_USER:$APP_GROUP" postgres -D "$PGDATA" \
     -p "$POSTGRES_PORT" \
     -c listen_addresses="$POSTGRES_LISTEN" &

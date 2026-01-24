@@ -796,7 +796,7 @@ function startAutoRefresh() {
     if (autoRefreshSeconds.value <= 0) {
       window.clearInterval(autoRefreshTimer as number);
       autoRefreshTimer = null;
-      window.location.reload();
+      window.location.assign('/');
     }
   }, 1000);
 }

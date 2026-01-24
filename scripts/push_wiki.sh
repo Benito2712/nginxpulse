@@ -133,11 +133,16 @@ else
 fi
 
 if command -v rsync >/dev/null 2>&1; then
-  rsync -a --delete "$SRC_DIR"/ "$WIKI_DIR"/
+  rsync -a --delete --exclude ".git" "$SRC_DIR"/ "$WIKI_DIR"/
 else
   echo "rsync not found; falling back to copy (deletions will not be removed)." >&2
   find "$WIKI_DIR" -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} + >/dev/null 2>&1 || true
   cp -R "$SRC_DIR"/. "$WIKI_DIR"/
+fi
+
+if [[ ! -d "$WIKI_DIR/.git" ]]; then
+  echo "Wiki repo missing .git after sync. Check rsync/copy behavior." >&2
+  exit 1
 fi
 
 git -C "$WIKI_DIR" add .

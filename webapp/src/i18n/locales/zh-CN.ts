@@ -162,8 +162,8 @@ const zhCN = {
     placeholders: {
       domains: 'example.com, www.example.com',
       logPath: '/var/log/nginx/access.log 或 /var/log/nginx/*.log',
-      sourcesJson: '[{ \"id\": \"sftp-1\", \"type\": \"sftp\" }]',
-      databaseDsn: 'postgres://user:pass@host:5432/db?sslmode=disable',
+      sourcesJson: "['{' \"id\": \"sftp-1\", \"type\": \"sftp\" '}']",
+      databaseDsn: 'postgres://user:pass{at}host:5432/db?sslmode=disable',
       serverPort: '8089 或 :8089',
       accessKeys: '多个密钥用逗号分隔',
       statusCodeInclude: '200, 204, 206',

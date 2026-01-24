@@ -162,8 +162,8 @@ const enUS = {
     placeholders: {
       domains: 'example.com, www.example.com',
       logPath: '/var/log/nginx/access.log or /var/log/nginx/*.log',
-      sourcesJson: '[{ \"id\": \"sftp-1\", \"type\": \"sftp\" }]',
-      databaseDsn: 'postgres://user:pass@host:5432/db?sslmode=disable',
+      sourcesJson: "['{' \"id\": \"sftp-1\", \"type\": \"sftp\" '}']",
+      databaseDsn: 'postgres://user:pass{at}host:5432/db?sslmode=disable',
       serverPort: '8089 or :8089',
       accessKeys: 'Separate multiple keys with commas',
       statusCodeInclude: '200, 204, 206',

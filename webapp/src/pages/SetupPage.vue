@@ -184,7 +184,7 @@
                   v-model.trim="databaseDraft.dsn"
                   class="setup-input"
                   type="text"
-                  :placeholder="t('setup.placeholders.databaseDsn')"
+                  :placeholder="t('setup.placeholders.databaseDsn', { at: '@' })"
                 />
                 <div v-if="fieldError('database.dsn')" class="setup-error">
                   {{ fieldError('database.dsn') }}

